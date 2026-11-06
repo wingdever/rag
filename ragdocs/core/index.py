@@ -170,10 +170,12 @@ def _chunk_to_node(chunk: Chunk):
             "ext": chunk.meta.ext,
             "ordinal": chunk.ordinal,
             "raw_text": chunk.raw_text,  # 冗余存一份，查询时直接展示，不必回读文件
+            "ino": chunk.meta.ino,        # 内部 inode 号，不进 embedding/LLM 文本
         },
         # 让 LLM 生成时只看「干净」的正文，不重复看头部元数据
-        excluded_embed_metadata_keys=["raw_text", "ordinal", "doc_id", "ext", "updated", "status"],
-        excluded_llm_metadata_keys=["raw_text", "ordinal", "doc_id", "ext"],
+        excluded_embed_metadata_keys=["raw_text", "ordinal", "doc_id", "ext", "updated", "status",
+                                      "ino"],
+        excluded_llm_metadata_keys=["raw_text", "ordinal", "doc_id", "ext", "ino"],
     )
 
 
@@ -521,10 +523,10 @@ class RagIndex:
     def _relabel_moved(self, moved: tuple[tuple[str, str], ...]) -> None:
         """把改名/移动的文件在索引里就地重贴路径元数据，不重 embed、不重建。
 
-        compute_delta 已用内容 sha1 把 removed+added 还原成 mv：内容没变，
-        向量完全复用。这里只做两件事：
-          1. 用新路径重新派生 path/topic/title（读一次本地文件，不 parse 成 chunk、
-             不 embed）；
+        compute_delta 已用 inode 号优先 hint + sha1 回退把 removed+added 还原成 mv：
+        内容没变，向量完全复用。这里只做两件事：
+          1. 用新路径重新派生 path/topic/title/ino（读一次本地文件，
+             不 parse 成 chunk、不 embed）；
           2. 找到 docstore 里 metadata.path==旧路径 的节点，就地改元数据并
              add_documents(allow_update=True) 覆盖；同步 vector_store 的冗余
              metadata_dict，保持一致。
@@ -556,6 +558,8 @@ class RagIndex:
                 md["path"] = new_rel
                 md["topic"] = new_meta.topic
                 md["title"] = new_meta.title
+                # mv 可能跨文件系统，inode 号会变；用新路径的当前值刷新
+                md["ino"] = new_meta.ino
                 if "abs_path" in md:
                     md["abs_path"] = str(new_path)
                 updated.append(node)
@@ -566,6 +570,7 @@ class RagIndex:
                     m["path"] = new_rel
                     m["topic"] = new_meta.topic
                     m["title"] = new_meta.title
+                    m["ino"] = new_meta.ino
 
             if updated:
                 docstore.add_documents(updated, allow_update=True)

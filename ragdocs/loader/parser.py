@@ -43,6 +43,8 @@ class DocMeta:
     topic: str                # 一级目录名，如 "2.6-intelligence"
     ext: str
     frontmatter: dict[str, Any] = field(default_factory=dict)
+    # 文件在本机文件系统内的 inode 号（内部用，不进 embedding 文本）
+    ino: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,11 @@ def _topic_of(rel: str) -> str:
 def build_meta(path: Path, cfg: Settings, text: str) -> DocMeta:
     rel = str(path.relative_to(cfg.docs_root))
     fm, _ = _parse_frontmatter(text)
+    try:
+        ino = path.stat().st_ino
+    except OSError:
+        # 文件可能刚被删除/无权限：inode 是易失值，取不到就置 0，不让元数据构造崩
+        ino = 0
     return DocMeta(
         path=rel,
         abs_path=str(path),
@@ -88,6 +95,7 @@ def build_meta(path: Path, cfg: Settings, text: str) -> DocMeta:
         topic=_topic_of(rel),
         ext=path.suffix.lower(),
         frontmatter=fm,
+        ino=ino,
     )
 
 
