@@ -78,3 +78,7 @@ agent 上（server 名不同）。详见 [docs/00 第五节](docs/00-总览与�
 - 换 embedding 模型需手动删 `data/` 全量重建
 - `ask_docs` 为单次检索+生成，无多轮对话
 - 无并发写保护；单人使用足够
+
+## License
+
+GNU General Public License v3.0 — see `LICENSE`.
