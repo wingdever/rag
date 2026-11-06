@@ -1,0 +1,21 @@
+# RAG 核心：只选纯 Python (py3-none-any) 包，兼容 Python 3.14
+# 刻意不装 chromadb：其依赖需在本机编译，且本项目规模用内置 SimpleVectorStore 足够
+
+llama-index-core>=0.14.0
+llama-index-embeddings-ollama>=0.10.0
+llama-index-llms-ollama>=0.11.0
+
+# ---- 可选依赖：llama.cpp（GGUF）本地 embedding 后端 ----
+# 默认 embedding.backend=remote（云端 MaaS），不需要下面这个包；
+# 仅当把 config/settings.yaml 切成 embedding.backend=llamacpp 时才需手动安装。
+# 注意：Python 3.14 上无预编译 wheel，pip 会源码编译，需本机有 gcc 与 BLAS，
+# 且本机独显有硬件隐患、只能跑纯 CPU，故默认不启用。
+# 安装命令（按需，放上面这几行之前单独执行）：
+#   CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" .venv/bin/pip install llama-cpp-python>=0.3.36
+# llama-cpp-python>=0.3.36
+
+# MCP 官方 SDK（stdio server）
+mcp>=1.0.0
+
+# 轻量配置与工具
+pyyaml>=6.0

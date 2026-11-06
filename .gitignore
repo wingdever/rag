@@ -1,0 +1,18 @@
+# 索引与运行时产物（含文档明文片段，勿提交）
+data/
+
+# 本地密钥 / 用户配置（含 api_key，勿提交；参见 ~/Projects/agent 的 user/）
+user/
+
+# Python 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 编辑器 / 系统
+.DS_Store
+*.swp

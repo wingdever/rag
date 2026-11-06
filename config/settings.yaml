@@ -1,0 +1,134 @@
+# ============================================================
+# ragdocs 配置文件
+# 所有路径与模型参数集中于此；敏感开关见 privacy 段
+# ============================================================
+
+# 文档库根目录（只读，不会写入）
+docs_root: "/home/wing/Documents"
+
+# 索引与缓存落盘位置（相对于项目根，或绝对路径）
+data_dir: "/home/wing/Projects/rag/data"
+
+# ---- Ollama 服务 ----
+# 仅当 ask_docs 用本地 LLM（生成）时使用。embedding 已改走 llama.cpp（见下），
+# 不再需要 Ollama 服务；若不需要生成，可彻底不启动 Ollama。
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  # embedding 模型：仅作 ollama/local 后端的回退配置；llamacpp 后端不使用
+  embed_model: "bge-m3"
+  # 生成模型：6GB 显存可跑 7b；若吃紧改 qwen2.5:3b（ask_docs 用）
+  llm_model: "qwen2.5:7b"
+  request_timeout: 120.0
+  # embed 调用卡死（worker 占满 CPU 不返回）时执行的重启命令。
+  # 留空则不自愈，直接抛错。需该命令在当前用户下可执行（如配 sudo NOPASSWD）。
+  # 注：embedding 走 llama.cpp 后本项基本用不到，仅 Ollama 生成侧保留。
+  restart_cmd: "sudo systemctl restart ollama"
+
+# ---- embedding 后端 ----
+# ollama : 经 Ollama 服务（最初设计；但本机实测 bge-m3 worker 易卡死，见 docs/06 第7节）
+# local  : 用 sentence-transformers 在进程内跑（需另装 sentence-transformers；当前未装）
+# llamacpp: 用 llama.cpp 直接读本地 GGUF 文件、进程内推理（无服务依赖；但本机纯 CPU 慢、独显不可用）
+# remote : 远程 embedding 服务（OpenAI /embeddings 协议，如讯飞 MaaS）。本机无可用 GPU 时选它
+embedding:
+  backend: "remote"
+  # local 后端使用的 sentence-transformers 模型名（首次会自动从 HF 下载）
+  local_model: "BAAI/bge-m3"
+
+# ---- 远程 embedding 服务（OpenAI 兼容 /embeddings 协议）----
+# 适用：本机无可用 GPU、CPU 推理过慢。文本会出网；维度（如 768）与本地 bge-m3
+# （1024）不同，切换后须删 data/ 全量重建索引。api_key 系敏感凭证，勿提交版本库。
+remote_embed:
+  base_url: "https://maas-api.cn-huabei-1.xf-yun.com/v2/embeddings"
+  # 真实 key 不放这里（避免提交泄露）。见 user/secrets.yaml（已 gitignore）
+  # 或环境变量 XF_YUN_API_KEY；此处留空占位即可。
+  api_key: ""
+  model: "xop3qwen8bembedding"
+  timeout: 120.0
+  dims: 0            # 0 = 用服务端默认维度（实测 768）
+  batch_size: 8      # 单次请求文本条数；前 20 文件实测解出 179 个 chunk，
+                     # 用小批量避免单个大请求超时（实测 64 条/次会触发 60s 超时）
+
+# ---- llama.cpp（GGUF）嵌入后端（备选，本机独显有隐患、纯 CPU 慢）----
+# 直接读本地 GGUF 文件、进程内推理，无需 Ollama 服务。
+# 模型需自行准备：Ollama 的模型不是裸 GGUF，不能复用。
+# 下载示例（二选一，放到下面 model_path 所指位置）：
+#   F16（约 1.1GB，精度最高）：
+#     wget -P ~/models https://huggingface.co/CompendiumLabs/bge-m3-gguf/resolve/main/bge-m3-f16.gguf
+#   Q8_0（约 0.6GB，速度快、精度损失小）：
+#     wget -P ~/models https://huggingface.co/CompendiumLabs/bge-m3-gguf/resolve/main/bge-m3-q8_0.gguf
+llamacpp_embed:
+  model_path: "~/models/bge-m3-q8_0.gguf"
+  n_ctx: 8192
+  n_threads: 0      # 0 = 自动（按 CPU 核数）
+  n_gpu_layers: 0   # 0 = 纯 CPU（本机独显风扇有隐患，高负载会硬件失稳，故不用 GPU）
+  batch_size: 32
+
+# ---- 分块策略 ----
+chunking:
+  chunk_size: 512        # token 近似值（按字符/4 估算）
+  chunk_overlap: 64
+  # 短于此字符数的文档整篇作为一个 chunk，不切分，避免语义断裂
+  short_doc_threshold: 1200
+  # 每个 chunk 头部注入的元数据，提升「领域/来源」检索命中率
+  inject_fields: ["path", "title", "topic", "status"]
+
+# ---- 第一阶段索引范围：纯文本优先 ----
+ingest:
+  # 允许索引的扩展名（小写，含点）
+  include_ext:
+    - ".md"
+    - ".markdown"
+    - ".txt"
+    - ".rst"
+    - ".c"
+    - ".h"
+    - ".cpp"
+    - ".hpp"
+    - ".py"
+    - ".js"
+    - ".ts"
+    - ".go"
+    - ".sh"
+    - ".pl"
+    - ".html"
+    - ".htm"
+    - ".json"
+    - ".csv"
+    - ".yaml"
+    - ".yml"
+    - ".toml"
+    - ".ini"
+    - ".service"
+  # 跳过的目录名（任意层级匹配）
+  exclude_dirs:
+    - ".git"
+    - ".vscode"
+    - ".marscode"
+    - ".docindex"
+    - "node_modules"
+    - "__pycache__"
+  # 单文件大小上限（字节），超过跳过，防止异常大文件拖垮索引
+  max_file_bytes: 524288   # 512 KiB
+
+# ---- 查询默认参数 ----
+query:
+  top_k: 5
+  similarity_threshold: 0.0   # 0 表示不按分数过滤；可设 0.3~0.5 降噪
+  # ask_docs 的系统提示词
+  system_prompt: |
+    你是个人知识库助手。只依据下面提供的检索片段回答，不要编造。
+    回答用简体中文，并在结尾列出引用的文件路径。
+    若片段不足以回答，明确说「知识库中未找到相关内容」。
+
+# ---- 隐私 ----
+# 用户已决定「全部索引」。这里保留可随时开启的排除开关，默认不启用。
+# 开启后，命中规则的文件的任何内容都不会进入索引与检索结果。
+privacy:
+  exclude_enabled: false
+  exclude_path_patterns:
+    - "4.0-selfInfo"
+    - "passwords.csv"
+    - "attachments/**/简历*"
+    - "**/密码*"
+  # 命中时是「整文件跳过」还是「仅脱敏后索引」
+  mode: "skip"   # skip | redact

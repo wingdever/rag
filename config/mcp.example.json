@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ragdocs": {
+      "command": "/home/wing/Projects/rag/.venv/bin/python",
+      "args": ["-m", "ragdocs.mcp_server"],
+      "cwd": "/home/wing/Projects/rag",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
