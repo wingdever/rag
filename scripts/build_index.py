@@ -54,7 +54,8 @@ def main() -> int:
     print(f"文档根目录 : {cfg.docs_root}")
     print(f"待索引文件 : {len(disc.files)}")
     print(f"新增 {len(delta.added)} / 修改 {len(delta.changed)} / "
-          f"删除 {len(delta.removed)} / 未变 {len(delta.unchanged)}")
+          f"删除 {len(delta.removed)} / 移动 {len(delta.moved)} / "
+          f"未变 {len(delta.unchanged)}")
 
     if args.dry_run:
         print("\n--dry-run，未执行 embedding。新增示例:")

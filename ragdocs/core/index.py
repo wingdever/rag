@@ -33,7 +33,7 @@ from typing import Any
 from ..config import Settings
 from ..loader.discovery import discover
 from ..loader.manifest import commit_manifest, compute_delta, load_manifest
-from ..loader.parser import Chunk, parse_file
+from ..loader.parser import Chunk, build_meta, parse_file
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class IngestStats:
     changed: int
     removed: int
     unchanged: int
+    moved: int
     chunks_built: int
     skipped: int
     total_chunks: int
@@ -479,6 +480,9 @@ class RagIndex:
             if new_nodes:
                 self._index.insert_nodes(new_nodes)
 
+        # 改名/移动：内容未变，向量完全复用，只就地重贴路径元数据（不重 embed）
+        self._relabel_moved(delta.moved)
+
         self._persist()
         if write_manifest:
             commit_manifest(self.cfg, stamps, chunk_counts)
@@ -493,6 +497,7 @@ class RagIndex:
             changed=len(delta.changed),
             removed=len(delta.removed),
             unchanged=len(delta.unchanged),
+            moved=len(delta.moved),
             chunks_built=len(new_nodes),
             skipped=len(disc.skipped),
             total_chunks=total_chunks,
@@ -512,6 +517,58 @@ class RagIndex:
         for rel in rel_paths:
             doc_id = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:16]
             store.delete(doc_id)
+
+    def _relabel_moved(self, moved: tuple[tuple[str, str], ...]) -> None:
+        """把改名/移动的文件在索引里就地重贴路径元数据，不重 embed、不重建。
+
+        compute_delta 已用内容 sha1 把 removed+added 还原成 mv：内容没变，
+        向量完全复用。这里只做两件事：
+          1. 用新路径重新派生 path/topic/title（读一次本地文件，不 parse 成 chunk、
+             不 embed）；
+          2. 找到 docstore 里 metadata.path==旧路径 的节点，就地改元数据并
+             add_documents(allow_update=True) 覆盖；同步 vector_store 的冗余
+             metadata_dict，保持一致。
+
+        刻意不动：embedding_dict（向量）、text（内嵌旧 header 的 embedding 文本）、
+        doc_id / chunk_id / ref_doc_id（冻结为旧路径哈希，改了会破坏向量键）。
+        这是「不重建」的代价，详见 docs/03。
+        """
+        if not moved:
+            return
+        index = self._ensure()
+        ctx = index.storage_context
+        docstore = ctx.docstore
+        metadata_dict = ctx.vector_store.data.metadata_dict
+
+        for old_rel, new_rel in moved:
+            new_path = self.cfg.docs_root / new_rel
+            try:
+                text = new_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                text = ""
+            new_meta = build_meta(new_path, self.cfg, text)
+
+            updated = []
+            for node_id, node in docstore.docs.items():
+                if node.metadata.get("path") != old_rel:
+                    continue
+                md = node.metadata
+                md["path"] = new_rel
+                md["topic"] = new_meta.topic
+                md["title"] = new_meta.title
+                if "abs_path" in md:
+                    md["abs_path"] = str(new_path)
+                updated.append(node)
+                # 同步 vector_store 里的冗余副本（retrieve 实际读 docstore，
+                # 这份仅用于一致性与审计，取不到就跳过不影响正确性）
+                m = metadata_dict.get(node_id)
+                if m is not None:
+                    m["path"] = new_rel
+                    m["topic"] = new_meta.topic
+                    m["title"] = new_meta.title
+
+            if updated:
+                docstore.add_documents(updated, allow_update=True)
 
     def _persist(self) -> None:
         self.cfg.index_dir.mkdir(parents=True, exist_ok=True)

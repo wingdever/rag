@@ -76,6 +76,9 @@ agent 上（server 名不同）。详见 [docs/00 第五节](docs/00-总览与�
 
 - docx / pdf / xlsx / 老式 .doc 未索引（第一阶段纯文本优先，清单在 `data/skipped_files.txt`）
 - 换 embedding 模型需手动删 `data/` 全量重建
+- 改名/移动文件不重 embed（按内容 sha1 识别为 mv，见 docs/03），只更新路径元数据：
+  检索结果路径是新值，但向量内嵌的旧路径/标题字段不刷新，`doc_id` 仍为旧路径哈希；
+  要完全一致需触发内容变更重算或删 `data/` 全量重建
 - `ask_docs` 为单次检索+生成，无多轮对话
 - 无并发写保护；单人使用足够
 

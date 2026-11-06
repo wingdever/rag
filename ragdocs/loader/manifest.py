@@ -42,6 +42,7 @@ class Delta:
     changed: tuple[Path, ...]
     removed: tuple[str, ...]      # 相对路径
     unchanged: tuple[Path, ...]
+    moved: tuple[tuple[str, str], ...] = ()   # (旧路径, 新路径)，内容未变的改名/移动
 
 
 def _stamp(path: Path, chunk_count: int = 0) -> FileStamp:
@@ -74,6 +75,67 @@ def save_manifest(cfg: Settings, data: dict) -> None:
     tmp.replace(cfg.manifest_path)   # 原子替换，避免写一半被 kill 留下坏清单
 
 
+def _detect_moves(
+    added_rels: list[str], removed: list[str], old: dict,
+    rel_of: dict[str, Path], stamps: dict[str, FileStamp],
+) -> list[tuple[str, str]]:
+    """把「一批路径消失 + 一批路径出现、且内容相同」还原为改名/移动 (mv)。
+
+    主键仍是相对路径：本函数只是把 added/removed 里内容指纹一致的配对挑出来，
+    当作「同一个文件换了路径」，从而免去重 embed。旧 manifest 结构不变（version 1），
+    因此是一次兼容迁移，无需删库重建。
+
+    配对键 = (内容 sha1, size)：removed 侧取清单里的旧指纹，added 侧取本轮
+    刚算出的 _stamp 指纹。同键下两组按路径排序后 zip 一对一消费，避免重复复用；
+    真正「删旧 + 增同内容新文件」也会被判为 mv（无害，省一次 embed）。
+
+    副作用（原地修改入参，避免来回拷贝）：
+    - 从 added_rels / removed 中剔除已配对的路径；
+    - 把 stamps[new_rel] 改成「复用旧 sha1/chunks、取新路径当前 stat」的 stamp，
+      让 commit_manifest 以新路径写回、total_chunks 不丢失。
+    """
+    from collections import defaultdict
+
+    # 用 (sha1, size) 分桶：removed 侧读旧清单，added 侧读本轮算出的 stamp
+    rem_by_key: dict[tuple, list[str]] = defaultdict(list)
+    for rel in removed:
+        rec = old.get(rel, {})
+        rem_by_key[(rec.get("sha1"), rec.get("size"))].append(rel)
+
+    add_by_key: dict[tuple, list[str]] = defaultdict(list)
+    for rel in added_rels:
+        st = stamps.get(rel)
+        if st is not None:
+            add_by_key[(st.sha1, st.size)].append(rel)
+
+    moved: list[tuple[str, str]] = []
+    consumed_added: set[str] = set()
+    consumed_removed: set[str] = set()
+    for key, rem_list in rem_by_key.items():
+        # 排序保证确定性，一对一消费，不重复复用
+        for old_rel, new_rel in zip(sorted(rem_list), sorted(add_by_key.get(key, []))):
+            moved.append((old_rel, new_rel))
+            consumed_added.add(new_rel)
+            consumed_removed.add(old_rel)
+
+    if not moved:
+        return []
+
+    added_rels[:] = [r for r in added_rels if r not in consumed_added]
+    removed[:] = [r for r in removed if r not in consumed_removed]
+
+    for old_rel, new_rel in moved:
+        rec = old.get(old_rel, {})
+        st = rel_of[new_rel].stat()
+        stamps[new_rel] = FileStamp(
+            size=st.st_size,
+            mtime_ns=st.st_mtime_ns,
+            sha1=rec.get("sha1", stamps[new_rel].sha1),
+            chunks=rec.get("chunks", 0),
+        )
+    return moved
+
+
 def compute_delta(cfg: Settings, current: tuple[Path, ...]) -> tuple[Delta, dict[str, FileStamp]]:
     """对比磁盘现状与 manifest，返回 (变更集, 本次实际算出的 stamp 映射)。
 
@@ -83,7 +145,7 @@ def compute_delta(cfg: Settings, current: tuple[Path, ...]) -> tuple[Delta, dict
     old = load_manifest(cfg)["files"]
     rel_of = {str(p.relative_to(cfg.docs_root)): p for p in current}
 
-    added: list[Path] = []
+    added_rels: list[str] = []
     changed: list[Path] = []
     unchanged: list[Path] = []
     stamps: dict[str, FileStamp] = {}
@@ -92,7 +154,7 @@ def compute_delta(cfg: Settings, current: tuple[Path, ...]) -> tuple[Delta, dict
         rec = old.get(rel)
         st = p.stat()
         if rec is None:
-            added.append(p)
+            added_rels.append(rel)
             stamps[rel] = _stamp(p)
         elif (rec.get("size") != st.st_size or rec.get("mtime_ns") != st.st_mtime_ns):
             new_stamp = _stamp(p)
@@ -109,8 +171,11 @@ def compute_delta(cfg: Settings, current: tuple[Path, ...]) -> tuple[Delta, dict
             stamps[rel] = FileStamp(rec["size"], rec["mtime_ns"], rec["sha1"],
                                     rec.get("chunks", 0))
 
-    removed = tuple(rel for rel in old if rel not in rel_of)
-    return Delta(tuple(added), tuple(changed), removed, tuple(unchanged)), stamps
+    removed = [rel for rel in old if rel not in rel_of]
+    moved = _detect_moves(added_rels, removed, old, rel_of, stamps)
+    added = tuple(rel_of[r] for r in added_rels)
+    return (Delta(added, tuple(changed), tuple(removed),
+                  tuple(unchanged), tuple(moved)), stamps)
 
 
 def commit_manifest(cfg: Settings, stamps: dict[str, FileStamp],
