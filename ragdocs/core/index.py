@@ -32,7 +32,7 @@ from typing import Any
 
 from ..config import Settings
 from ..loader.discovery import discover
-from ..loader.manifest import commit_manifest, compute_delta, load_manifest
+from ..loader.delta import commit_manifest, compute_delta, load_manifest, plan_apply
 from ..loader.parser import Chunk, build_meta, parse_file
 
 
@@ -424,11 +424,17 @@ class RagIndex:
 
     # ---------- 构建 ----------
 
-    def build(self, write_manifest: bool = True) -> IngestStats:
-        """增量构建。返回统计信息。
+    def build(self, write_manifest: bool = True,
+              disc: "DiscoveryResult | None" = None) -> IngestStats:
+        """增量构建。返回统计信息。流程对应 docs/dev/delta.md §3：
 
-        流程：发现文件 -> 对比 manifest 得 Delta -> 只对 added/changed 解析分块
-        -> 已有索引则 insert/delete，否则新建 -> persist -> (可选)提交 manifest。
+        1-3. compute_delta 已完成取两表/取增删/取移动（见 delta.compute_delta）
+        4.   matched_embeds：matched 中 content 变，同路径重 embed（先删旧节点再插新）
+             matched_prims：content 未变，仅 stamp 写回 manifest（不重 embed）
+        5.   moved_prims（=delta.moved）：纯改名、content 未变，仅 _relabel_moved 重贴 metadata，不重 embed；
+             moved_embeds：(旧路径, 新路径) 改名且 content 变，按旧路径删节点 + 重 embed 新路径
+        6.   added_embeds：新增文件，直接 embed 插入
+        7.   delete left removed_recs = delta.removed（moved_prims/moved_embeds 旧路径已扣减）
 
         write_manifest=False 用于「小批量先验证」：建索引、能检索，但不污染
         全量增量状态（否则全量时会以为这些文件已索引而跳过）。
@@ -436,10 +442,12 @@ class RagIndex:
         from llama_index.core import StorageContext, VectorStoreIndex
         from llama_index.core.vector_stores import SimpleVectorStore
 
-        disc = discover(self.cfg)
+        disc = discover(self.cfg) if disc is None else disc
         delta, stamps = compute_delta(self.cfg, disc.files)
-        to_process = list(delta.added) + list(delta.changed)
+        # 把 Delta 翻译成索引操作计划（无 llama-index 依赖），由本函数执行
+        plan = plan_apply(delta, self.cfg.docs_root)
 
+        to_process = [op.new_path for op in plan.embed]
         new_nodes = []
         chunk_counts: dict[str, int] = {}
         for p in to_process:
@@ -471,19 +479,19 @@ class RagIndex:
                 ctx = StorageContext.from_defaults(vector_store=store)
                 self._index = VectorStoreIndex(new_nodes, storage_context=ctx)
         else:
-            # 删除已移除/被修改文件的旧节点，再插入新节点
-            stale_ids = set()
-            for rel in delta.removed:
-                stale_ids.add(rel)
-            for p in delta.changed:
-                stale_ids.add(str(p.relative_to(self.cfg.docs_root)))
+            # 先删后插：embed 项的 old_rel 是需删除的旧节点键（None 为纯新增），
+            # 再加上 plan.delete（left_removed）。改名后索引以旧路径 doc_id 为键，
+            # 必须按旧路径删，否则旧节点残留 + 重贴变重复。
+            stale_ids = {op.old_rel for op in plan.embed if op.old_rel is not None}
+            stale_ids.update(plan.delete)
             if stale_ids:
                 self._delete_by_paths(stale_ids)
             if new_nodes:
                 self._index.insert_nodes(new_nodes)
 
-        # 改名/移动：内容未变，向量完全复用，只就地重贴路径元数据（不重 embed）
-        self._relabel_moved(delta.moved)
+        # 纯改名（moved_prims）：内容未变，向量复用，仅就地重贴路径元数据（不重 embed）。
+        # moved_embeds 已在 plan.embed 中走「删旧 + 重 embed 新路径」，不在此处理。
+        self._relabel_moved(plan.relabel)
 
         self._persist()
         if write_manifest:
@@ -495,10 +503,10 @@ class RagIndex:
         )
         return IngestStats(
             total_files=len(disc.files),
-            added=len(delta.added),
-            changed=len(delta.changed),
+            added=len(delta.added_embeds),
+            changed=len(delta.matched_embeds) + len(delta.moved_embeds),
             removed=len(delta.removed),
-            unchanged=len(delta.unchanged),
+            unchanged=len(delta.matched_prims) + len(delta.moved_prims),
             moved=len(delta.moved),
             chunks_built=len(new_nodes),
             skipped=len(disc.skipped),

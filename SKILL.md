@@ -49,11 +49,11 @@
 
 ## 更新 index 向量数据库
 
-笔记有增删改后，增量重建索引：
+笔记有增删改后，增量重建索引（基于 `ragdocs/loader/delta.py` 的状态推算，见 `docs/dev/delta.md`）：
 
 ```bash
 .venv/bin/python scripts/build_index.py
 ```
 
-首次可先 `--dry-run` 预览；`--only` / `--limit` 可小批量验证。
+首次可先 `--dry-run` 预览变更集（新增/修改/删除/移动/未变），不真正 embedding；`--only` / `--limit` 可小批量验证。
 换 embedding 模型需先删 `data/` 再全量重建。

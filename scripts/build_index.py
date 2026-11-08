@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ragdocs.config import load_settings
 from ragdocs.core.index import RagIndex
-from ragdocs.loader.discovery import discover
-from ragdocs.loader.manifest import compute_delta
+from ragdocs.loader.discovery import discover, DiscoveryResult
+from ragdocs.loader.delta import compute_delta
 
 
 def main() -> int:
@@ -53,18 +53,18 @@ def main() -> int:
     delta, _ = compute_delta(cfg, disc.files)
     print(f"文档根目录 : {cfg.docs_root}")
     print(f"待索引文件 : {len(disc.files)}")
-    print(f"新增 {len(delta.added)} / 修改 {len(delta.changed)} / "
-          f"删除 {len(delta.removed)} / 移动 {len(delta.moved)} / "
-          f"未变 {len(delta.unchanged)}")
+    print(f"新增 {len(delta.added_embeds)} / 修改 {len(delta.matched_embeds) + len(delta.moved_embeds)} / "
+          f"删除 {len(delta.left_removed)} / 移动 {len(delta.moved_prims)} / "
+          f"未变 {len(delta.matched_prims) + len(delta.moved_prims)}")
 
     if args.dry_run:
         print("\n--dry-run，未执行 embedding。新增示例:")
-        for p in delta.added[:10]:
+        for p in delta.added_embeds[:10]:
             print("  +", p.relative_to(cfg.docs_root))
         return 0
 
     rag = RagIndex(cfg)
-    st = rag.build(write_manifest=not partial)
+    st = rag.build(write_manifest=not partial, disc=disc)
     print("\n构建完成:")
     for k, v in st.__dict__.items():
         print(f"  {k:16s}: {v}")
