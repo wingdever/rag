@@ -134,6 +134,11 @@ def _detect_moves(
 
     for ino, rem_list in rem_by_ino.items():
         for old_rel, new_rel in zip(sorted(rem_list), sorted(add_by_ino.get(ino, []))):
+            # 相同的inode可能在改名的同时也编辑过内容，需要检验sha1和size才能算纯mv
+            old_rec = old.get(old_rel, {})
+            new_st = stamps.get(new_rel)
+            if new_st is None or old_rec.get("sha1") != new_st.sha1 or old_rec.get("size") != new_st.size:
+                continue
             moved.append((old_rel, new_rel))
             consumed_added.add(new_rel)
             consumed_removed.add(old_rel)
